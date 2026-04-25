@@ -1,0 +1,59 @@
+    def get_vworld_coords(self, address):
+        url = "https://api.vworld.kr/req/address"
+        params = {
+            "service": "address", "request": "getcoord", "crs": "epsg:4326",
+            "address": address, "format": "json", "type": "road", "key": self.api_key
+        }
+        try:
+            response = requests.get(url, params=params, timeout=5)
+            data = response.json()
+            if data['response']['status'] == 'OK':
+                lng = data['response']['result']['point']['x']
+                lat = data['response']['result']['point']['y']
+                return float(lat), float(lng)
+        except:
+            return None, None
+        return None, None
+
+    def run_process(self):
+        if self.df is None: return
+
+        lats, lngs = [], []
+        print("VWORLD 좌표 변환 중...")
+        
+        for idx, row in self.df.iterrows():
+            lat, lng = self.get_vworld_coords(row['주소'])
+            if lat is None:
+                lat, lng = self.get_vworld_coords(row['주소'].replace("type=road", "type=parcel"))
+            
+            lats.append(lat)
+            lngs.append(lng)
+            time.sleep(0.05) # 속도 약간 개선
+
+        self.df['위도'] = lats
+        self.df['경도'] = lngs
+        self.update_tree1()
+
+        match_data = []
+        # 위도/경도가 있는 데이터만 추출 (전화번호 포함)
+        valid_df = self.df.dropna(subset=['위도', '경도']).reset_index(drop=True)
+        # 데이터 순서: 가맹점명(0), 주소(1), 전화번호(2), 위도(3), 경도(4)
+        data_values = valid_df[['가맹점명', '주소', '전화번호', '위도', '경도']].values
+        n = len(data_values)
+
+        for i in range(n):
+            for j in range(n):
+                if i == j: continue
+                dist = geodesic((data_values[i][3], data_values[i][4]), (data_values[j][3], data_values[j][4])).km
+                # 요청 순서: 기준매장, 거리, 상대매장, 상대주소, 상대전화번호
+                match_data.append([
+                    data_values[i][0], # 기준매장 명
+                    round(dist, 3),    # 거리
+                    data_values[j][0], # 상대매장 명
+                    data_values[j][1], # 상대주소
+                    data_values[j][2]  # 상대전화번호
+                ])
+        
+        cols = ["기준매장", "거리(km)", "상대매장", "상대주소", "상대전화번호"]
+        self.result_df = pd.DataFrame(match_data, columns=cols)
+        messagebox.showinfo("완료", f"분석 완료! 총 {len(self.result_df)}개의 매칭 데이터 생성.")
